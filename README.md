@@ -1,42 +1,77 @@
-# Cement Strength Prediction with PySpark's MLlib
+# Cement strength prediction
+![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
+![Spark](https://img.shields.io/badge/PySpark-E25A1C?style=flat&logo=apachespark&logoColor=white)
+![License](https://img.shields.io/badge/License-CC%20BY--NC%204.0-0a2c46?style=flat)
 
-[![Language Badge](https://img.shields.io/badge/Language-Python-blue.svg)](https://www.python.org/)
-[![PySpark Badge](https://img.shields.io/badge/PySpark-3.1.2-e25a1c.svg)](https://spark.apache.org/docs/latest/api/python/index.html)
-[![Library Badge](https://img.shields.io/badge/Library-Pandas-yellow.svg)](https://pandas.pydata.org/)
-[![Library Badge](https://img.shields.io/badge/Library-Scikit--learn-orange.svg)](https://scikit-learn.org/)
-[![License Badge](https://img.shields.io/badge/License-CC%20BY--NC%204.0-0a2c46.svg)](https://creativecommons.org/licenses/by-nc/4.0/legalcode)
+How strong will a batch of concrete be, given what went into it? I tried four regression models in PySpark's MLlib to predict compressive strength from the mix ingredients and the age of the sample, then used the best one to answer a few practical questions.
 
-This project involves building a regression model using PySpark's MLlib to predict the compressive strength of cement based on its ingredients. The dataset consists of 1030 instances of concrete samples, containing 9 attributes (8 continuous and 1 discrete), and 1 continuous quantitative output variable.
+I built this to learn Spark's machine learning library. With 1,030 rows the data is far too small to need Spark, and scikit-learn would do the same job faster.
 
-Our goal is to identify the features that are the strongest predictors of cement strength and provide recommendations for optimal values of cement ingredients. We will also create an application where users can input their own values for age and get a predicted value for cement strength.
+## The data
 
-## Prerequisites
+The [Concrete Compressive Strength dataset](https://archive.ics.uci.edu/ml/datasets/Concrete+Compressive+Strength) from the UCI repository: 1,030 samples, no missing values.
 
-Before running the code, you will need to have the following installed:
+| Feature | Unit |
+|---|---|
+| cement, slag, fly ash, water, superplasticizer, coarse aggregate, fine aggregate | kg per m³ of mix |
+| age | days |
+| **csMPa** (target) | compressive strength in MPa |
 
-- PySpark: the Python API for Apache Spark
-- Jupyter Notebook: an interactive development environment for Python
+## What I did
 
+1. **Fixed skew.** Age is heavily right-skewed (skewness 3.26), so I capped it at the 1st and 99th percentiles and took log(age + 1).
+2. **Split** the data 70/30 into training and test sets, with a fixed seed.
+3. **Compared four models:** linear regression, a decision tree, a random forest and gradient-boosted trees. Each model was tuned with cross-validation over a small parameter grid.
+4. **Looked at which features matter,** using the linear model's coefficients and p-values and the tree models' feature importances.
+5. **Used the best model** to predict the strength of a given mix, and to find how much cement gives the strongest mix.
 
-## Dataset
+## Results
 
-The dataset used in this project is the [Concrete Compressive Strength Data Set](https://archive.ics.uci.edu/ml/datasets/Concrete+Compressive+Strength) from the UCI Machine Learning Repository. It contains 1030 instances of concrete samples, with 9 attributes (8 continuous and 1 discrete) and 1 continuous quantitative output variable (compressive strength).
+Test-set RMSE (lower is better):
 
-| Column Name       | Data Type | Measurement Unit | Description                                      |
-|-------------------|----------|------------------|---------------------------------------------------|
-| cement            | double   | kg/m3            | Input variable                                    |
-| slag              | double   | kg/m3            | Input variable                                    |
-| flyash            | double   | kg/m3            | Input variable                                    |
-| water             | double   | kg/m3            | Input variable                                    |
-| superplasticizer  | double   | kg/m3            | Input variable                                    |
-| coarseaggregate   | double   | kg/m3            | Input variable                                    |
-| fineaggregate     | double   | kg/m3            | Input variable                                    |
-| age               | integer  | days             | Input variable                                    |
-| csMPa (compressive strength)| double | MPa | Output variable                               | 
+| Model | RMSE (MPa) |
+|---|---|
+| **Gradient-boosted trees** | **6.77** |
+| Linear regression | 7.64 |
+| Random forest | 7.79 |
+| Decision tree | 8.45 |
 
+The linear model explains 78% of the variance on the test set (R² 0.78), against 83% on the training set, so it doesn't overfit much. Gradient boosting does best, but it only gains about 0.9 MPa on the linear model.
 
-## Usage
+**What matters most:** age, cement and water came out on top in every tree model. In the linear model all eight features are significant at the 5% level. Water is the only one with a negative coefficient, which fits the engineering rule that more water makes weaker concrete.
 
-To run the code, open the `Cement_Strength_Prediction.ipynb` file in Jupyter Notebook and execute the cells in order. The notebook contains detailed explanations of each step in the code and the results obtained.
+**Predicting a mix:** for 540 kg/m³ cement, 162 water, 2.5 superplasticizer, 1,040 coarse and 676 fine aggregate at 28 days, gradient boosting predicts 66.99 MPa. The measured strength is 79.99 MPa, so it's 13 MPa short. That's about twice its average error, which makes sense, because this mix is at the very top of the cement range.
 
-To use the application for predicting cement strength based on user input, run the `predict_cement_strength` function in the notebook after it has been defined. This function takes a single argument `age` (in days) and returns the predicted cement strength (in MPa).
+**How much cement?** Holding everything else fixed, predicted strength climbs from about 28 MPa at 100 kg/m³ to 67 MPa at 390 kg/m³, then stays flat up to 540. So 390 kg/m³ is the least cement that gets the highest predicted strength. Tree models can't predict beyond the values they've seen, so the flat top is partly a limit of the model rather than a fact about concrete.
+
+## Two bugs I fixed
+
+When I came back to this notebook I found two mistakes in the prediction cells:
+
+- **The age didn't match training.** The model was trained on the transformed age (capped, then log(age + 1)), but new inputs were fed the raw age in days. A prediction for 28 days was really a prediction for an age far outside anything the model had seen. A `prepare_input` helper now applies the same transform to new inputs.
+- **The cement search stopped too early.** It stepped cement up by 5 and quit after ten steps without improvement. Gradient-boosted trees predict in flat steps, so it quit straight away and reported the first value it tried, 100 kg/m³. It now scores the whole range and takes the best.
+
+Both fixes changed the answers. The 28-day prediction went from 73.45 to 66.99 MPa. The old figure was closer to the real value, but only by luck. The best cement amount went from 100 to 390 kg/m³.
+
+## Caveats
+
+- **One train/test split.** I report no confidence intervals, and with only about 300 test rows the RMSE differences between the random forest, the linear model and the decision tree are probably not meaningful.
+- **The p-values assume a linear model with normal errors.** I didn't check the residuals.
+- **Small run-to-run differences.** The random forest and decision tree scores move by a few hundredths between runs. Gradient boosting and the linear model gave the same numbers every time.
+
+## How to run
+
+You need Java 8, 11 or 17 for Spark.
+
+```bash
+pip install pyspark pandas jupyter
+jupyter notebook Cement_Strength_Prediction.ipynb
+```
+
+The cell asking for an age waits for you to type a number. If there's no prompt (for example when the notebook runs headless), it uses 28 days.
+
+The saved outputs come from a run with PySpark 3.5.1. It reproduced the original linear model results exactly (RMSE 7.64529).
+
+## What I'd like to do next
+
+Add a scikit-learn baseline, use bootstrapping to put an interval around each model's RMSE, and check the linear model's residuals.
